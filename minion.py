@@ -16,5 +16,9 @@ class Minion:
         if self.health <= 0:
             self.is_alive = False
 
+        defender.health -= self.attack
         if defender.health <= 0:
             defender.is_alive = False
+
+    def __str__(self):
+        return '(' + str(self.attack) + ',' + str(self.health) + ')'
