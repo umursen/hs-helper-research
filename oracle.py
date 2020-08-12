@@ -2,6 +2,7 @@ from threadManager import ThreadManager
 import threading
 from copy import copy
 from queue import Queue
+import random
 
 PLAYER_ONE = 1
 PLAYER_TWO = 2
@@ -49,9 +50,9 @@ class Scenario:
     PLAYER_TWO_ATTACKER_INDEX = 0
     level = 0
 
-    def __init__(self, player_turn=1):
+    def __init__(self):
         self.board = {PLAYER_ONE: list(), PLAYER_TWO: list()}
-        self.player_turn = player_turn
+        self.player_turn = 1
 
     def set_board(self, player_one_cards: list, player_two_cards: list):
         self.board[PLAYER_ONE] = player_one_cards
@@ -92,7 +93,8 @@ class Scenario:
 
     def copy(self):
         from copy import copy
-        scenario = Scenario(player_turn=self.player_turn)
+        scenario = Scenario()
+        scenario.player_turn = self.player_turn
         board_one = [
             copy(minion) for minion in self.board[PLAYER_ONE]
         ]
@@ -117,41 +119,93 @@ class Scenario:
 
 class Oracle:
 
-    def __init__(self, player_one_board, player_two_board):
-        self.scenario = Scenario()
-        self.scenario.set_board(player_one_board, player_two_board)
+    MAXIMUM_THREADS = 32
 
     @staticmethod
     def next_player(player_index):
         return 3 - player_index
 
-    def calculate_game_result_density(self, scenario=None):
-        if not scenario:
-            scenario = self.scenario
+    def calculate_game_result_density(self, scenario, method='decision_tree', args=None):
+        que = Queue()
 
-            que = Queue()
+        if method == 'decision_tree':
+            if len(scenario.board[PLAYER_ONE]) != len(scenario.board[PLAYER_TWO]):
 
-            # player 1 starts
-            scenario.player_turn = 1
-            t1 = threading.Thread(target=lambda q, s: q.put(self.calculate_game_result_density(s)), args=(que, scenario), name='thread-first')
-            # density_one = self.calculate_game_result_density(scenario)
-            t1.start()
+                if len(scenario.board[PLAYER_ONE]) > len(scenario.board[PLAYER_TWO]):
+                    starter = PLAYER_ONE
+                else:
+                    starter = PLAYER_TWO
 
-            # player 2 starts
-            scenario = copy(scenario)
-            scenario.player_turn = 2
-            t2 = threading.Thread(target=lambda q, s: q.put(self.calculate_game_result_density(s)), args=(que, scenario), name='thread-second')
-            # density_two = self.calculate_game_result_density(scenario)
-            t2.start()
+                scenario = copy(scenario)
+                scenario.player_turn = starter
+                density = self.solve_for_all_solutions(scenario)
+            else:
+                # player 1 starts
+                scenario.player_turn = 1
+                t1 = threading.Thread(target=lambda q, s: q.put(self.solve_for_all_solutions(s)), args=(que, scenario), name='thread-first')
+                # density_one = self.calculate_game_result_density(scenario)
+                t1.start()
 
-            t1.join()
-            t2.join()
-            densities = [que.get(), que.get()]
-            # densities = [density_one, density_two]
+                # player 2 starts
+                scenario = copy(scenario)
+                scenario.player_turn = 2
+                t2 = threading.Thread(target=lambda q, s: q.put(self.solve_for_all_solutions(s)), args=(que, scenario), name='thread-second')
+                # density_two = self.calculate_game_result_density(scenario)
+                t2.start()
+
+                t1.join()
+                t2.join()
+
+                densities = [que.get(), que.get()]
+                # densities = [density_one, density_two]
+                density = join_results(densities)
+
+        elif method == 'sampling':
+            sampling_amount = args['sampling_amount']
+            densities = []
+            threads = []
+            for i in range(sampling_amount):
+                if i < sampling_amount/2:
+                    scenario.player_turn = 1
+                else:
+                    scenario.player_turn = 2
+
+                if self.MAXIMUM_THREADS <= len(threads):
+                    t = threads.pop(0)
+                    t.join()
+
+                t = threading.Thread(target=lambda q, s: q.put(self.solve_for_one_solution(s)),
+                                      args=(que, scenario), name='thread-first')
+
+                t.start()
+                threads.append(t)
+
+            while len(threads):
+                t = threads.pop(0)
+                t.join()
+
+            while not que.empty():
+                densities.append(que.get())
+
             density = join_results(densities)
+        else:
+            raise Exception('Unknown method!')
 
+        return density
+
+    def solve_for_one_solution(self, scenario):
+        player_turn = scenario.player_turn
+
+        defender_index = random.randint(0, len(scenario.board[self.next_player(player_turn)])-1)
+        child_scenario = self.execute_attack(defender_index, player_turn, scenario)
+        density = child_scenario.get_winner()
+        if density.unresolved:
+            child_scenario.player_turn = self.next_player(child_scenario.player_turn)
+            return self.solve_for_one_solution(child_scenario)
+        else:
             return density
 
+    def solve_for_all_solutions(self, scenario):
         player_turn = scenario.player_turn
 
         densities = []
@@ -166,12 +220,12 @@ class Oracle:
                 child_scenario.player_turn = self.next_player(child_scenario.player_turn)
                 if scenario.level < THREAD_LEVEL:
                     thread = threading.Thread(
-                        target=lambda manager, s: manager.density_queue.put(self.calculate_game_result_density(s)),
+                        target=lambda manager, s: manager.density_queue.put(self.solve_for_all_solutions(s)),
                         args=(tm, child_scenario))
                     tm.thread_queue.put(thread)
                     thread.start()
                 else:
-                    density = self.calculate_game_result_density(child_scenario)
+                    density = self.solve_for_all_solutions(child_scenario)
                     densities.append(density)
             else:
                 return density
