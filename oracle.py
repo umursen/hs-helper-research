@@ -91,6 +91,10 @@ class Scenario:
         if draw:
             return GameResult(draw=100)
 
+    def summon_minion(self, minion, player, location):
+        if len(self.board[player]) < 7:
+            self.board[player].insert(location, minion)
+
     def copy(self):
         from copy import copy
         scenario = Scenario()
@@ -195,9 +199,7 @@ class Oracle:
 
     def solve_for_one_solution(self, scenario):
         player_turn = scenario.player_turn
-
-        defender_index = random.randint(0, len(scenario.board[self.next_player(player_turn)])-1)
-        child_scenario = self.execute_attack(defender_index, player_turn, scenario)
+        child_scenario = self.execute_attack(player_turn, scenario)
         density = child_scenario.get_winner()
         if density.unresolved:
             child_scenario.player_turn = self.next_player(child_scenario.player_turn)
@@ -214,7 +216,7 @@ class Oracle:
             tm = ThreadManager()
 
         for defender_index, defender in enumerate(scenario.board[self.next_player(player_turn)]):
-            child_scenario = self.execute_attack(defender_index, player_turn, scenario)
+            child_scenario = self.execute_attack(player_turn, scenario, defender_index=defender_index)
             density = child_scenario.get_winner()
             if density.unresolved:
                 child_scenario.player_turn = self.next_player(child_scenario.player_turn)
@@ -238,18 +240,26 @@ class Oracle:
 
         return join_results(densities)
 
-    def execute_attack(self, defender_index: int, player_number: int, scenario: Scenario):
+    def execute_attack(self, player: int, scenario: Scenario, defender_index: int = None):
+        if defender_index is None:
+            defender_index = random.randint(0, len(scenario.board[self.next_player(player)]) - 1)
+
         scenario = scenario.copy()
-        attacker = scenario.board[player_number][scenario.get_attacker_index(player_number)]
-        defender = scenario.board[self.next_player(player_number)][defender_index]
+        attacker = scenario.board[player][scenario.get_attacker_index(player)]
+        defender = scenario.board[self.next_player(player)][defender_index]
         attacker.perform_attack(defender)
+
         if not attacker.is_alive:
-            scenario.board[player_number].remove(attacker)
+            scenario.board[player].remove(attacker)
+            attacker.perform_deathrattle(scenario, player, scenario.get_attacker_index(player))
+            # print(scenario)
         else:
-            scenario.increment_attacker_index(player_number)
+            scenario.increment_attacker_index(player)
 
         if not defender.is_alive:
-            scenario.board[self.next_player(player_number)].remove(defender)
+            scenario.board[self.next_player(player)].remove(defender)
+            defender.perform_deathrattle(scenario, self.next_player(player), scenario.get_attacker_index(player))
+            # print(scenario)
 
         scenario.player_turn = self.next_player(scenario.player_turn)
         return scenario
